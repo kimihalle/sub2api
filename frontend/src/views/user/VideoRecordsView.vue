@@ -49,7 +49,7 @@
               <tr>
                 <th class="table-th w-[170px]">时间</th>
                 <th class="table-th w-[220px]">模型</th>
-                <th class="table-th min-w-[300px]">提示词</th>
+                <th class="table-th w-[280px]">提示词</th>
                 <th class="table-th w-[120px]">状态</th>
                 <th class="table-th w-[110px]">耗时</th>
                 <th class="table-th w-[180px]">扣费/退费</th>
@@ -68,8 +68,16 @@
                 <td class="px-5 py-4 text-sm">
                   <div class="font-semibold text-gray-900 dark:text-white">{{ item.model || '-' }}</div>
                 </td>
-                <td class="max-w-xl px-5 py-4 text-sm text-gray-700 dark:text-dark-200">
-                  <div class="line-clamp-3 break-words leading-6">{{ item.prompt || '-' }}</div>
+                <td class="w-[280px] max-w-[280px] px-5 py-4 text-sm text-gray-700 dark:text-dark-200">
+                  <button
+                    class="prompt-copy line-clamp-2 w-full text-left leading-6"
+                    :class="{ 'text-primary-600 dark:text-primary-300': copiedTask === item.task_id }"
+                    :title="item.prompt ? '点击复制提示词' : ''"
+                    :disabled="!item.prompt"
+                    @click="copyPrompt(item)"
+                  >
+                    {{ copiedTask === item.task_id ? '已复制' : (item.prompt || '-') }}
+                  </button>
                   <div class="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
                     <span v-if="item.ratio" class="tag">{{ item.ratio }}</span>
                     <span v-if="item.resolution" class="tag">{{ item.resolution }}</span>
@@ -87,7 +95,7 @@
                   <div v-else-if="item.status === 'failed'" class="mt-1 text-xs text-gray-400">未产生退费或费用为 0</div>
                 </td>
                 <td class="px-5 py-4 text-sm">
-                  <div v-if="item.video_url || item.download_url" class="flex flex-col items-start gap-2">
+                  <div v-if="item.video_url || item.download_url" class="flex flex-nowrap items-center gap-2">
                     <button v-if="item.video_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, false)">播放链接</button>
                     <button v-if="item.download_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, true)">下载链接</button>
                   </div>
@@ -131,6 +139,7 @@ const records = ref<VideoRecord[]>([])
 const loading = ref(false)
 const error = ref('')
 const openingTask = ref('')
+const copiedTask = ref('')
 const filters = reactive({ status: 'all', model: '' })
 const pagination = reactive({ page: 1, page_size: 20, total: 0 })
 
@@ -203,6 +212,31 @@ async function openContent(item: VideoRecord, download: boolean) {
   }
 }
 
+async function copyPrompt(item: VideoRecord) {
+  const text = item.prompt || ''
+  if (!text) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      textarea.remove()
+    }
+    copiedTask.value = item.task_id
+    window.setTimeout(() => {
+      if (copiedTask.value === item.task_id) copiedTask.value = ''
+    }, 1200)
+  } catch {
+    error.value = '复制失败，请手动选择复制'
+  }
+}
+
 async function loadRecords(page = pagination.page) {
   loading.value = true
   error.value = ''
@@ -257,6 +291,19 @@ onMounted(() => loadRecords(1))
   border-radius: 9999px;
   background: rgb(243 244 246);
   padding: 0.125rem 0.5rem;
+}
+
+.prompt-copy {
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.prompt-copy:hover:not(:disabled) {
+  color: rgb(37 99 235);
+}
+
+.prompt-copy:disabled {
+  cursor: default;
 }
 
 .link-btn {
