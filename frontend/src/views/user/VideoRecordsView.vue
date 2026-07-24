@@ -95,7 +95,7 @@
                   <div v-else-if="item.status === 'failed'" class="mt-1 text-xs text-gray-400">未产生退费或费用为 0</div>
                 </td>
                 <td class="px-5 py-4 text-sm">
-                  <div v-if="item.video_url || item.download_url" class="flex flex-nowrap items-center gap-2">
+                  <div v-if="item.video_url || item.download_url" class="flex flex-nowrap items-center gap-4 leading-none">
                     <button v-if="item.video_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, false)">播放</button>
                     <button v-if="item.download_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, true)">下载</button>
                   </div>
@@ -308,17 +308,23 @@ onMounted(() => loadRecords(1))
 }
 
 .link-btn {
-  border-radius: 0.75rem;
-  background: rgb(239 246 255);
-  padding: 0.375rem 0.625rem;
-  font-size: 0.75rem;
-  color: rgb(29 78 216);
-  transition: background 0.2s;
+  display: inline-flex;
+  align-items: center;
+  height: 1rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 0.875rem;
+  line-height: 1;
+  color: rgb(37 99 235);
   white-space: nowrap;
+  vertical-align: middle;
 }
 
 .link-btn:not(:disabled):hover {
-  background: rgb(219 234 254);
+  color: rgb(29 78 216);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .link-btn:disabled {
