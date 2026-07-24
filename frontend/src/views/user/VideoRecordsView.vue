@@ -96,8 +96,8 @@
                 </td>
                 <td class="px-5 py-4 text-sm">
                   <div v-if="item.video_url || item.download_url" class="flex flex-nowrap items-center gap-2">
-                    <button v-if="item.video_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, false)">播放链接</button>
-                    <button v-if="item.download_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, true)">下载链接</button>
+                    <button v-if="item.video_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, false)">播放</button>
+                    <button v-if="item.download_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, true)">下载</button>
                   </div>
                   <div v-else class="max-w-[220px] truncate rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-dark-900/50 dark:text-dark-300" :title="item.task_id">
                     任务：{{ item.task_id }}
@@ -174,8 +174,9 @@ function money(value?: number | null) {
 
 function formatElapsed(item: VideoRecord) {
   let seconds = Number(item.elapsed_seconds || 0)
-  if (!seconds && item.created_at && item.updated_at) {
-    const diff = Math.floor((new Date(item.updated_at).getTime() - new Date(item.created_at).getTime()) / 1000)
+  if (!seconds && item.created_at) {
+    const endAt = item.completed_at || item.updated_at
+    const diff = Math.floor((new Date(endAt).getTime() - new Date(item.created_at).getTime()) / 1000)
     if (Number.isFinite(diff) && diff > 0) seconds = diff
   }
   if (!seconds) return '-'
@@ -313,6 +314,7 @@ onMounted(() => loadRecords(1))
   font-size: 0.75rem;
   color: rgb(29 78 216);
   transition: background 0.2s;
+  white-space: nowrap;
 }
 
 .link-btn:not(:disabled):hover {

@@ -54,6 +54,7 @@ type sanbaoVideoTask struct {
 	Cost            float64
 	RefundAmount    *float64
 	RefundedAt      *time.Time
+	CompletedAt     *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -82,6 +83,7 @@ type sanbaoVideoListItem struct {
 	Cost            float64    `json:"cost"`
 	RefundAmount    *float64   `json:"refund_amount,omitempty"`
 	RefundedAt      *time.Time `json:"refunded_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
@@ -409,8 +411,8 @@ func (h *OpenAIGatewayHandler) SanbaoVideoLogs(c *gin.Context) {
 		       t.group_id, COALESCE(g.name, ''), t.model, COALESCE(t.upstream_model, ''), COALESCE(t.prompt, ''),
 		       t.status, COALESCE(t.ratio, ''), COALESCE(t.resolution, ''), t.duration_seconds,
 		       COALESCE(t.video_url, ''), COALESCE(t.download_url, ''), COALESCE(t.error_message, ''),
-		       GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (t.updated_at - t.created_at))))::BIGINT,
-		       t.cost, t.refund_amount, t.refunded_at, t.created_at, t.updated_at
+		       GREATEST(0, FLOOR(EXTRACT(EPOCH FROM ((CASE WHEN t.status IN ('succeeded','completed') THEN COALESCE(t.completed_at, t.updated_at) ELSE t.updated_at END) - t.created_at))))::BIGINT,
+		       t.cost, t.refund_amount, t.refunded_at, t.completed_at, t.created_at, t.updated_at
 		FROM sanbao_video_tasks t
 		LEFT JOIN api_keys k ON k.id = t.api_key_id
 		LEFT JOIN accounts a ON a.id = t.account_id
@@ -430,7 +432,7 @@ func (h *OpenAIGatewayHandler) SanbaoVideoLogs(c *gin.Context) {
 		if err := rows.Scan(&item.ID, &item.TaskID, &item.UserID, &item.APIKeyID, &item.APIKeyName, &item.AccountID, &item.AccountName,
 			&item.GroupID, &groupName, &item.Model, &item.UpstreamModel, &item.Prompt, &item.Status, &item.Ratio, &item.Resolution,
 			&item.DurationSeconds, &item.VideoURL, &item.DownloadURL, &item.ErrorMessage, &item.ElapsedSeconds, &item.Cost, &item.RefundAmount,
-			&item.RefundedAt, &item.CreatedAt, &item.UpdatedAt); err == nil {
+			&item.RefundedAt, &item.CompletedAt, &item.CreatedAt, &item.UpdatedAt); err == nil {
 			if item.GroupID != nil {
 				item.GroupName = groupName
 			}
@@ -498,7 +500,7 @@ func (h *OpenAIGatewayHandler) listPendingSanbaoVideoTasks(ctx context.Context, 
 	rows, err := h.sanbaoDB.QueryContext(ctx, `
 		SELECT task_id, user_id, api_key_id, account_id, group_id, model, COALESCE(upstream_model,''), status,
 		       COALESCE(ratio,''), COALESCE(resolution,''), duration_seconds, COALESCE(video_url,''), COALESCE(download_url,''),
-		       COALESCE(error_message,''), cost, refund_amount, refunded_at, created_at, updated_at
+		       COALESCE(error_message,''), cost, refund_amount, refunded_at, completed_at, created_at, updated_at
 		FROM sanbao_video_tasks
 		WHERE status IN ('queued','processing','in_progress')
 		  AND updated_at < NOW() - INTERVAL '15 seconds'
@@ -514,7 +516,7 @@ func (h *OpenAIGatewayHandler) listPendingSanbaoVideoTasks(ctx context.Context, 
 		task := &sanbaoVideoTask{}
 		if err := rows.Scan(&task.TaskID, &task.UserID, &task.APIKeyID, &task.AccountID, &task.GroupID, &task.Model, &task.UpstreamModel,
 			&task.Status, &task.Ratio, &task.Resolution, &task.DurationSeconds, &task.VideoURL, &task.DownloadURL, &task.ErrorMessage,
-			&task.Cost, &task.RefundAmount, &task.RefundedAt, &task.CreatedAt, &task.UpdatedAt); err == nil {
+			&task.Cost, &task.RefundAmount, &task.RefundedAt, &task.CompletedAt, &task.CreatedAt, &task.UpdatedAt); err == nil {
 			out = append(out, task)
 		}
 	}
@@ -558,7 +560,7 @@ func isSanbaoAccount(account *service.Account) bool {
 		return true
 	}
 	provider := strings.ToLower(account.GetCredential("provider"))
-	return provider == "sanbao" || provider == "涓夊疂"
+	return provider == "sanbao" || provider == "三宝"
 }
 
 func normalizeSanbaoVideoPayload(payload map[string]any, upstreamModel string) map[string]any {
@@ -674,13 +676,15 @@ func (h *OpenAIGatewayHandler) upsertSanbaoVideoTask(ctx context.Context, task *
 	prompt := strings.TrimSpace(jsonString(request["prompt"]))
 	_, err := h.sanbaoDB.ExecContext(ctx, `
 		INSERT INTO sanbao_video_tasks
-		(task_id, user_id, api_key_id, account_id, group_id, model, upstream_model, prompt, status, ratio, resolution, duration_seconds, video_count, request, response, video_url, download_url, error_message, cost, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,$13::jsonb,$14::jsonb,$15,$16,$17,$18,NOW())
+		(task_id, user_id, api_key_id, account_id, group_id, model, upstream_model, prompt, status, ratio, resolution, duration_seconds, video_count, request, response, video_url, download_url, error_message, cost, completed_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,$13::jsonb,$14::jsonb,$15,$16,$17,$18,CASE WHEN $9 IN ('succeeded','completed') THEN COALESCE($19::timestamptz, NOW()) ELSE NULL END,NOW())
 		ON CONFLICT (task_id) DO UPDATE SET
 			status=EXCLUDED.status, response=EXCLUDED.response, video_url=EXCLUDED.video_url, download_url=EXCLUDED.download_url,
-			error_message=EXCLUDED.error_message, cost=CASE WHEN sanbao_video_tasks.cost > 0 THEN sanbao_video_tasks.cost ELSE EXCLUDED.cost END, updated_at=NOW()
+			error_message=EXCLUDED.error_message, cost=CASE WHEN sanbao_video_tasks.cost > 0 THEN sanbao_video_tasks.cost ELSE EXCLUDED.cost END,
+			completed_at=CASE WHEN EXCLUDED.status IN ('succeeded','completed') THEN COALESCE(sanbao_video_tasks.completed_at, EXCLUDED.completed_at, NOW()) ELSE sanbao_video_tasks.completed_at END,
+			updated_at=NOW()
 	`, task.TaskID, task.UserID, task.APIKeyID, task.AccountID, task.GroupID, task.Model, task.UpstreamModel, prompt, task.Status,
-		task.Ratio, task.Resolution, task.DurationSeconds, string(reqJSON), string(response), task.VideoURL, task.DownloadURL, task.ErrorMessage, task.Cost)
+		task.Ratio, task.Resolution, task.DurationSeconds, string(reqJSON), string(response), task.VideoURL, task.DownloadURL, task.ErrorMessage, task.Cost, sanbaoCompletedAtFromResponse(task.Status, response))
 	return err
 }
 
@@ -692,12 +696,12 @@ func (h *OpenAIGatewayHandler) getSanbaoVideoTask(ctx context.Context, taskID st
 	err := h.sanbaoDB.QueryRowContext(ctx, `
 		SELECT task_id, user_id, api_key_id, account_id, group_id, model, COALESCE(upstream_model,''), status,
 		       COALESCE(ratio,''), COALESCE(resolution,''), duration_seconds, COALESCE(video_url,''), COALESCE(download_url,''),
-		       COALESCE(error_message,''), cost, refund_amount, refunded_at, created_at, updated_at
+		       COALESCE(error_message,''), cost, refund_amount, refunded_at, completed_at, created_at, updated_at
 		FROM sanbao_video_tasks
 		WHERE task_id=$1 AND user_id=$2 AND api_key_id=$3
 	`, taskID, userID, apiKeyID).Scan(&task.TaskID, &task.UserID, &task.APIKeyID, &task.AccountID, &task.GroupID, &task.Model, &task.UpstreamModel,
 		&task.Status, &task.Ratio, &task.Resolution, &task.DurationSeconds, &task.VideoURL, &task.DownloadURL, &task.ErrorMessage,
-		&task.Cost, &task.RefundAmount, &task.RefundedAt, &task.CreatedAt, &task.UpdatedAt)
+		&task.Cost, &task.RefundAmount, &task.RefundedAt, &task.CompletedAt, &task.CreatedAt, &task.UpdatedAt)
 	return task, err
 }
 
@@ -709,12 +713,12 @@ func (h *OpenAIGatewayHandler) getSanbaoVideoTaskForUser(ctx context.Context, ta
 	err := h.sanbaoDB.QueryRowContext(ctx, `
 		SELECT task_id, user_id, api_key_id, account_id, group_id, model, COALESCE(upstream_model,''), status,
 		       COALESCE(ratio,''), COALESCE(resolution,''), duration_seconds, COALESCE(video_url,''), COALESCE(download_url,''),
-		       COALESCE(error_message,''), cost, refund_amount, refunded_at, created_at, updated_at
+		       COALESCE(error_message,''), cost, refund_amount, refunded_at, completed_at, created_at, updated_at
 		FROM sanbao_video_tasks
 		WHERE task_id=$1 AND user_id=$2
 	`, taskID, userID).Scan(&task.TaskID, &task.UserID, &task.APIKeyID, &task.AccountID, &task.GroupID, &task.Model, &task.UpstreamModel,
 		&task.Status, &task.Ratio, &task.Resolution, &task.DurationSeconds, &task.VideoURL, &task.DownloadURL, &task.ErrorMessage,
-		&task.Cost, &task.RefundAmount, &task.RefundedAt, &task.CreatedAt, &task.UpdatedAt)
+		&task.Cost, &task.RefundAmount, &task.RefundedAt, &task.CompletedAt, &task.CreatedAt, &task.UpdatedAt)
 	return task, err
 }
 
@@ -772,10 +776,27 @@ func (h *OpenAIGatewayHandler) updateSanbaoVideoTaskFromStatus(ctx context.Conte
 	}
 	_, err := h.sanbaoDB.ExecContext(ctx, `
 		UPDATE sanbao_video_tasks
-		SET status=$2, response=$3::jsonb, video_url=$4, download_url=$5, error_message=$6, updated_at=NOW()
+		SET status=$2, response=$3::jsonb, video_url=$4, download_url=$5, error_message=$6,
+		    completed_at=CASE WHEN $2 IN ('succeeded','completed') THEN COALESCE(completed_at, $7::timestamptz, NOW()) ELSE completed_at END,
+		    updated_at=NOW()
 		WHERE task_id=$1
-	`, task.TaskID, task.Status, string(response), task.VideoURL, task.DownloadURL, task.ErrorMessage)
+	`, task.TaskID, task.Status, string(response), task.VideoURL, task.DownloadURL, task.ErrorMessage, sanbaoCompletedAtFromResponse(task.Status, response))
 	return err
+}
+
+func sanbaoCompletedAtFromResponse(status string, body []byte) *time.Time {
+	if !strings.EqualFold(status, sanbaoVideoStatusSucceeded) && !strings.EqualFold(status, "completed") {
+		return nil
+	}
+	raw := firstGJSON(body, "data.updated_at", "updated_at", "data.completed_at", "completed_at")
+	if raw == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return nil
+	}
+	return &t
 }
 
 func (h *OpenAIGatewayHandler) refundSanbaoVideoTask(ctx context.Context, task *sanbaoVideoTask) error {
