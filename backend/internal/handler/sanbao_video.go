@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -230,7 +231,11 @@ func (h *OpenAIGatewayHandler) SanbaoVideoGeneration(c *gin.Context) {
 		h.errorResponse(c, http.StatusPaymentRequired, "billing_error", err.Error())
 		return
 	}
-	cost := h.lookupSanbaoUsageCost(c.Request.Context(), apiKey.ID, taskID)
+	usageRequestID := sanbaoUsageBillingRequestID(c.Request.Context(), taskID)
+	cost := h.lookupSanbaoUsageCost(c.Request.Context(), apiKey.ID, usageRequestID)
+	if cost <= 0 && usageRequestID != taskID {
+		cost = h.lookupSanbaoUsageCost(c.Request.Context(), apiKey.ID, taskID)
+	}
 	if err := h.upsertSanbaoVideoTask(c.Request.Context(), &sanbaoVideoTask{
 		TaskID:          taskID,
 		UserID:          subject.UserID,
@@ -763,6 +768,21 @@ func (h *OpenAIGatewayHandler) lookupSanbaoUsageCost(ctx context.Context, apiKey
 	var cost float64
 	_ = h.sanbaoDB.QueryRowContext(ctx, `SELECT actual_cost FROM usage_logs WHERE api_key_id=$1 AND request_id=$2 ORDER BY id DESC LIMIT 1`, apiKeyID, taskID).Scan(&cost)
 	return cost
+}
+
+func sanbaoUsageBillingRequestID(ctx context.Context, upstreamRequestID string) string {
+	if ctx != nil {
+		if clientRequestID, _ := ctx.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(clientRequestID) != "" {
+			return "client:" + strings.TrimSpace(clientRequestID)
+		}
+		if requestID, _ := ctx.Value(ctxkey.RequestID).(string); strings.TrimSpace(requestID) != "" {
+			return "local:" + strings.TrimSpace(requestID)
+		}
+	}
+	if requestID := strings.TrimSpace(upstreamRequestID); requestID != "" {
+		return requestID
+	}
+	return ""
 }
 
 func sanbaoVideoURLFromResponse(body []byte) string {
