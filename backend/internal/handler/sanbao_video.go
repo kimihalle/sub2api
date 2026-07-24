@@ -158,31 +158,9 @@ func (h *OpenAIGatewayHandler) SanbaoVideoGeneration(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, body)
-	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-		c.Request.Context(),
-		apiKey.GroupID,
-		"",
-		sessionHash,
-		requestModel,
-		nil,
-		service.OpenAIUpstreamTransportHTTPSSE,
-		"",
-		false,
-		false,
-		false,
-		service.PlatformOpenAI,
-	)
-	if err != nil || selection == nil || selection.Account == nil {
+	account, err := h.selectSanbaoVideoAccount(c.Request.Context(), apiKey.GroupID)
+	if err != nil || account == nil {
 		h.errorResponse(c, http.StatusServiceUnavailable, "no_available_account", "No available Sanbao video account")
-		return
-	}
-	account := selection.Account
-	if selection.ReleaseFunc != nil {
-		defer selection.ReleaseFunc()
-	}
-	if !isSanbaoAccount(account) {
-		h.errorResponse(c, http.StatusServiceUnavailable, "no_sanbao_account", "Selected account is not a Sanbao upstream account")
 		return
 	}
 
@@ -526,6 +504,34 @@ func (h *OpenAIGatewayHandler) listPendingSanbaoVideoTasks(ctx context.Context, 
 		}
 	}
 	return out, rows.Err()
+}
+
+func (h *OpenAIGatewayHandler) selectSanbaoVideoAccount(ctx context.Context, groupID *int64) (*service.Account, error) {
+	if h == nil || h.sanbaoDB == nil || h.gatewayService == nil || groupID == nil {
+		return nil, sql.ErrNoRows
+	}
+	var accountID int64
+	err := h.sanbaoDB.QueryRowContext(ctx, `
+		SELECT a.id
+		FROM accounts a
+		JOIN account_groups ag ON ag.account_id = a.id
+		WHERE ag.group_id = $1
+		  AND a.deleted_at IS NULL
+		  AND a.platform = 'openai'
+		  AND a.type = 'apikey'
+		  AND a.status = 'active'
+		  AND COALESCE(a.schedulable, true) = true
+		  AND (
+		    LOWER(COALESCE(a.credentials->>'base_url', '')) LIKE '%sanbaobeauty.com%'
+		    OR LOWER(COALESCE(a.credentials->>'provider', '')) IN ('sanbao', '三宝')
+		  )
+		ORDER BY ag.priority ASC, a.priority DESC, a.id ASC
+		LIMIT 1
+	`, *groupID).Scan(&accountID)
+	if err != nil {
+		return nil, err
+	}
+	return h.gatewayService.GetAccountByID(ctx, accountID)
 }
 
 func isSanbaoAccount(account *service.Account) bool {
