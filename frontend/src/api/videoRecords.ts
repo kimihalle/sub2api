@@ -20,6 +20,7 @@ export interface VideoRecord {
   video_url?: string
   download_url?: string
   error_message?: string
+  elapsed_seconds?: number
   cost: number
   refund_amount?: number | null
   refunded_at?: string | null
@@ -43,5 +44,14 @@ export async function listVideoRecords(params?: {
   model?: string
 }): Promise<VideoRecordsResponse> {
   const { data } = await apiClient.get<VideoRecordsResponse>('/video-records', { params })
+  return data
+}
+
+export async function fetchVideoRecordContent(taskId: string, download = false): Promise<Blob> {
+  const { data } = await apiClient.get<Blob>(`/video-records/${encodeURIComponent(taskId)}/content`, {
+    params: download ? { download: 1 } : undefined,
+    responseType: 'blob',
+    timeout: 120000,
+  })
   return data
 }

@@ -78,6 +78,7 @@ type sanbaoVideoListItem struct {
 	VideoURL        string     `json:"video_url,omitempty"`
 	DownloadURL     string     `json:"download_url,omitempty"`
 	ErrorMessage    string     `json:"error_message,omitempty"`
+	ElapsedSeconds  int64      `json:"elapsed_seconds,omitempty"`
 	Cost            float64    `json:"cost"`
 	RefundAmount    *float64   `json:"refund_amount,omitempty"`
 	RefundedAt      *time.Time `json:"refunded_at,omitempty"`
@@ -309,15 +310,21 @@ func (h *OpenAIGatewayHandler) SanbaoVideoStatus(c *gin.Context) {
 	if strings.EqualFold(updated.Status, sanbaoVideoStatusFailed) {
 		_ = h.refundSanbaoVideoTask(c.Request.Context(), updated)
 	}
+	videoURL := ""
+	downloadURL := ""
+	if strings.TrimSpace(updated.VideoURL) != "" || strings.TrimSpace(updated.DownloadURL) != "" {
+		videoURL = sanbaoGatewayContentURL(c, taskID, false)
+		downloadURL = sanbaoGatewayContentURL(c, taskID, true)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"id":           taskID,
 		"task_id":      taskID,
 		"status":       normalizeSanbaoDownstreamStatus(updated.Status),
 		"progress":     gjson.GetBytes(respBytes, "data.progress").Value(),
-		"video_url":    updated.VideoURL,
-		"download_url": updated.DownloadURL,
+		"video_url":    videoURL,
+		"download_url": downloadURL,
 		"error":        updated.ErrorMessage,
-		"data":         jsonRawObject(respBytes),
+		"data":         sanbaoResponseWithPublicVideoLinks(respBytes, videoURL, downloadURL),
 	})
 }
 
@@ -342,28 +349,26 @@ func (h *OpenAIGatewayHandler) SanbaoVideoContent(c *gin.Context) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video content not found")
 		return
 	}
-	contentURL := strings.TrimSpace(task.DownloadURL)
-	if contentURL == "" {
-		contentURL = strings.TrimSpace(task.VideoURL)
-	}
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, contentURL, nil)
-	if err != nil {
-		h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Invalid video URL")
+	h.streamSanbaoVideoTaskContent(c, task, strings.EqualFold(c.Query("download"), "1") || strings.EqualFold(c.Query("download"), "true"))
+}
+
+func (h *OpenAIGatewayHandler) SanbaoVideoRecordContent(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		h.errorResponse(c, http.StatusBadGateway, "upstream_error", err.Error())
+	if h.sanbaoDB == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Video content not found"})
 		return
 	}
-	defer resp.Body.Close()
-	for k, values := range resp.Header {
-		for _, v := range values {
-			c.Writer.Header().Add(k, v)
-		}
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	task, err := h.getSanbaoVideoTaskForUser(c.Request.Context(), taskID, subject.UserID)
+	if err != nil || (strings.TrimSpace(task.DownloadURL) == "" && strings.TrimSpace(task.VideoURL) == "") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Video content not found"})
+		return
 	}
-	c.Status(resp.StatusCode)
-	_, _ = io.Copy(c.Writer, resp.Body)
+	h.streamSanbaoVideoTaskContent(c, task, strings.EqualFold(c.Query("download"), "1") || strings.EqualFold(c.Query("download"), "true"))
 }
 
 func (h *OpenAIGatewayHandler) SanbaoVideoLogs(c *gin.Context) {
@@ -404,6 +409,7 @@ func (h *OpenAIGatewayHandler) SanbaoVideoLogs(c *gin.Context) {
 		       t.group_id, COALESCE(g.name, ''), t.model, COALESCE(t.upstream_model, ''), COALESCE(t.prompt, ''),
 		       t.status, COALESCE(t.ratio, ''), COALESCE(t.resolution, ''), t.duration_seconds,
 		       COALESCE(t.video_url, ''), COALESCE(t.download_url, ''), COALESCE(t.error_message, ''),
+		       GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (t.updated_at - t.created_at))))::BIGINT,
 		       t.cost, t.refund_amount, t.refunded_at, t.created_at, t.updated_at
 		FROM sanbao_video_tasks t
 		LEFT JOIN api_keys k ON k.id = t.api_key_id
@@ -423,10 +429,14 @@ func (h *OpenAIGatewayHandler) SanbaoVideoLogs(c *gin.Context) {
 		var groupName string
 		if err := rows.Scan(&item.ID, &item.TaskID, &item.UserID, &item.APIKeyID, &item.APIKeyName, &item.AccountID, &item.AccountName,
 			&item.GroupID, &groupName, &item.Model, &item.UpstreamModel, &item.Prompt, &item.Status, &item.Ratio, &item.Resolution,
-			&item.DurationSeconds, &item.VideoURL, &item.DownloadURL, &item.ErrorMessage, &item.Cost, &item.RefundAmount,
+			&item.DurationSeconds, &item.VideoURL, &item.DownloadURL, &item.ErrorMessage, &item.ElapsedSeconds, &item.Cost, &item.RefundAmount,
 			&item.RefundedAt, &item.CreatedAt, &item.UpdatedAt); err == nil {
 			if item.GroupID != nil {
 				item.GroupName = groupName
+			}
+			if item.VideoURL != "" || item.DownloadURL != "" {
+				item.VideoURL = sanbaoRecordContentURL(c, item.TaskID, false)
+				item.DownloadURL = sanbaoRecordContentURL(c, item.TaskID, true)
 			}
 			items = append(items, item)
 		}
@@ -691,6 +701,60 @@ func (h *OpenAIGatewayHandler) getSanbaoVideoTask(ctx context.Context, taskID st
 	return task, err
 }
 
+func (h *OpenAIGatewayHandler) getSanbaoVideoTaskForUser(ctx context.Context, taskID string, userID int64) (*sanbaoVideoTask, error) {
+	if h.sanbaoDB == nil {
+		return nil, sql.ErrNoRows
+	}
+	task := &sanbaoVideoTask{}
+	err := h.sanbaoDB.QueryRowContext(ctx, `
+		SELECT task_id, user_id, api_key_id, account_id, group_id, model, COALESCE(upstream_model,''), status,
+		       COALESCE(ratio,''), COALESCE(resolution,''), duration_seconds, COALESCE(video_url,''), COALESCE(download_url,''),
+		       COALESCE(error_message,''), cost, refund_amount, refunded_at, created_at, updated_at
+		FROM sanbao_video_tasks
+		WHERE task_id=$1 AND user_id=$2
+	`, taskID, userID).Scan(&task.TaskID, &task.UserID, &task.APIKeyID, &task.AccountID, &task.GroupID, &task.Model, &task.UpstreamModel,
+		&task.Status, &task.Ratio, &task.Resolution, &task.DurationSeconds, &task.VideoURL, &task.DownloadURL, &task.ErrorMessage,
+		&task.Cost, &task.RefundAmount, &task.RefundedAt, &task.CreatedAt, &task.UpdatedAt)
+	return task, err
+}
+
+func (h *OpenAIGatewayHandler) streamSanbaoVideoTaskContent(c *gin.Context, task *sanbaoVideoTask, download bool) {
+	contentURL := strings.TrimSpace(task.VideoURL)
+	if download || contentURL == "" {
+		contentURL = strings.TrimSpace(task.DownloadURL)
+	}
+	if contentURL == "" {
+		contentURL = strings.TrimSpace(task.VideoURL)
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, contentURL, nil)
+	if err != nil {
+		h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Invalid video URL")
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.errorResponse(c, http.StatusBadGateway, "upstream_error", err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	for k, values := range resp.Header {
+		if strings.EqualFold(k, "Content-Disposition") && !download {
+			continue
+		}
+		for _, v := range values {
+			c.Writer.Header().Add(k, v)
+		}
+	}
+	if c.Writer.Header().Get("Content-Type") == "" {
+		c.Header("Content-Type", "video/mp4")
+	}
+	if download && c.Writer.Header().Get("Content-Disposition") == "" {
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.mp4"`, task.TaskID))
+	}
+	c.Status(resp.StatusCode)
+	_, _ = io.Copy(c.Writer, resp.Body)
+}
+
 func updateTaskFromSanbaoResponse(task *sanbaoVideoTask, body []byte) *sanbaoVideoTask {
 	clone := *task
 	if status := firstGJSON(body, "data.status", "status"); status != "" {
@@ -745,8 +809,8 @@ func (h *OpenAIGatewayHandler) refundSanbaoVideoTask(ctx context.Context, task *
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO usage_logs
 		(user_id, api_key_id, account_id, request_id, model, requested_model, group_id, total_cost, actual_cost, rate_multiplier,
-		 billing_type, request_type, video_count, video_resolution, video_duration_seconds, billing_mode, media_type, created_at)
-		VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$7,1,0,1,1,$8,$9,$10,'video',NOW())
+		 billing_type, request_type, video_count, video_resolution, video_duration_seconds, billing_mode, created_at)
+		VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$7,1,0,1,1,$8,$9,$10,NOW())
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`, userID, apiKeyID, accountID, requestID, model, groupID, -refund, resolution, duration, billingMode)
 	if err != nil {
@@ -783,6 +847,53 @@ func sanbaoUsageBillingRequestID(ctx context.Context, upstreamRequestID string) 
 		return requestID
 	}
 	return ""
+}
+
+func sanbaoRecordContentURL(c *gin.Context, taskID string, download bool) string {
+	path := "/api/v1/video-records/" + taskID + "/content"
+	if download {
+		path += "?download=1"
+	}
+	return publicRequestBaseURL(c) + path
+}
+
+func sanbaoGatewayContentURL(c *gin.Context, taskID string, download bool) string {
+	path := "/v1/videos/" + taskID + "/content"
+	if download {
+		path += "?download=1"
+	}
+	return publicRequestBaseURL(c) + path
+}
+
+func publicRequestBaseURL(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	proto := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto"))
+	if proto == "" {
+		proto = strings.TrimSpace(c.GetHeader("X-Forwarded-Protocol"))
+	}
+	if proto == "" {
+		if c.Request.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	if idx := strings.Index(proto, ","); idx >= 0 {
+		proto = strings.TrimSpace(proto[:idx])
+	}
+	host := strings.TrimSpace(c.GetHeader("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(c.Request.Host)
+	}
+	if idx := strings.Index(host, ","); idx >= 0 {
+		host = strings.TrimSpace(host[:idx])
+	}
+	if host == "" {
+		return ""
+	}
+	return proto + "://" + host
 }
 
 func sanbaoVideoURLFromResponse(body []byte) string {
@@ -856,6 +967,29 @@ func jsonRawObject(body []byte) any {
 		return map[string]any{}
 	}
 	return out
+}
+
+func sanbaoResponseWithPublicVideoLinks(body []byte, videoURL, downloadURL string) any {
+	out := jsonRawObject(body)
+	root, ok := out.(map[string]any)
+	if !ok {
+		return out
+	}
+	if videoURL != "" {
+		root["video_url"] = videoURL
+	}
+	if downloadURL != "" {
+		root["download_url"] = downloadURL
+	}
+	if data, ok := root["data"].(map[string]any); ok {
+		if videoURL != "" {
+			data["video_url"] = videoURL
+		}
+		if downloadURL != "" {
+			data["download_url"] = downloadURL
+		}
+	}
+	return root
 }
 
 func jsonString(v any) string {

@@ -11,5 +11,6 @@ func RegisterVideoRecordRoutes(v1 *gin.RouterGroup, h *handler.Handlers, jwtAuth
 	group.Use(gin.HandlerFunc(jwtAuth))
 	{
 		group.GET("", h.OpenAIGateway.SanbaoVideoLogs)
+		group.GET("/:task_id/content", h.OpenAIGateway.SanbaoVideoRecordContent)
 	}
 }

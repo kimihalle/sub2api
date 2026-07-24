@@ -48,27 +48,25 @@
             <thead class="bg-gray-50/80 dark:bg-dark-900/60">
               <tr>
                 <th class="table-th w-[170px]">时间</th>
-                <th class="table-th w-[260px]">模型/密钥</th>
+                <th class="table-th w-[220px]">模型</th>
                 <th class="table-th min-w-[300px]">提示词</th>
                 <th class="table-th w-[120px]">状态</th>
+                <th class="table-th w-[110px]">耗时</th>
                 <th class="table-th w-[180px]">扣费/退费</th>
-                <th class="table-th w-[260px]">结果</th>
+                <th class="table-th w-[170px]">结果</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 bg-white dark:divide-dark-700 dark:bg-dark-800">
               <tr v-if="loading">
-                <td colspan="6" class="px-5 py-14 text-center text-sm text-gray-500">加载中...</td>
+                <td colspan="7" class="px-5 py-14 text-center text-sm text-gray-500">加载中...</td>
               </tr>
               <tr v-else-if="records.length === 0">
-                <td colspan="6" class="px-5 py-14 text-center text-sm text-gray-500">暂无视频记录</td>
+                <td colspan="7" class="px-5 py-14 text-center text-sm text-gray-500">暂无视频记录</td>
               </tr>
               <tr v-for="item in records" :key="item.id" class="align-top transition hover:bg-primary-50/40 dark:hover:bg-dark-700/50">
                 <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-600 dark:text-dark-300">{{ formatTime(item.created_at) }}</td>
                 <td class="px-5 py-4 text-sm">
                   <div class="font-semibold text-gray-900 dark:text-white">{{ item.model || '-' }}</div>
-                  <div v-if="item.upstream_model && item.upstream_model !== item.model" class="mt-1 text-xs text-gray-500">上游：{{ item.upstream_model }}</div>
-                  <div class="mt-1 text-xs text-gray-500">{{ item.api_key_name || `密钥 #${item.api_key_id}` }}</div>
-                  <div v-if="item.group_name" class="mt-1 inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-dark-700 dark:text-dark-300">{{ item.group_name }}</div>
                 </td>
                 <td class="max-w-xl px-5 py-4 text-sm text-gray-700 dark:text-dark-200">
                   <div class="line-clamp-3 break-words leading-6">{{ item.prompt || '-' }}</div>
@@ -82,18 +80,16 @@
                 <td class="px-5 py-4 text-sm">
                   <span :class="statusClass(item.status)" class="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold">{{ statusText(item.status) }}</span>
                 </td>
+                <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-600 dark:text-dark-300">{{ formatElapsed(item) }}</td>
                 <td class="px-5 py-4 text-sm text-gray-700 dark:text-dark-200">
                   <div>扣费：{{ money(item.cost) }}</div>
                   <div v-if="item.refund_amount" class="mt-1 text-emerald-600 dark:text-emerald-300">已退：{{ money(item.refund_amount) }}</div>
                   <div v-else-if="item.status === 'failed'" class="mt-1 text-xs text-gray-400">未产生退费或费用为 0</div>
                 </td>
                 <td class="px-5 py-4 text-sm">
-                  <div v-if="item.video_url || item.download_url" class="space-y-2">
-                    <video v-if="item.video_url" class="h-28 w-44 rounded-xl bg-black object-cover" controls :src="item.video_url"></video>
-                    <div class="flex flex-wrap gap-2">
-                      <a v-if="item.video_url" :href="item.video_url" target="_blank" class="link-btn">播放链接</a>
-                      <a v-if="item.download_url" :href="item.download_url" target="_blank" class="link-btn">下载链接</a>
-                    </div>
+                  <div v-if="item.video_url || item.download_url" class="flex flex-col items-start gap-2">
+                    <button v-if="item.video_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, false)">播放链接</button>
+                    <button v-if="item.download_url" class="link-btn" :disabled="openingTask === item.task_id" @click="openContent(item, true)">下载链接</button>
                   </div>
                   <div v-else class="max-w-[220px] truncate rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-dark-900/50 dark:text-dark-300" :title="item.task_id">
                     任务：{{ item.task_id }}
@@ -121,7 +117,7 @@
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Select from '@/components/common/Select.vue'
 import { onMounted, reactive, ref } from 'vue'
-import { listVideoRecords, type VideoRecord } from '@/api/videoRecords'
+import { fetchVideoRecordContent, listVideoRecords, type VideoRecord } from '@/api/videoRecords'
 
 const statusOptions = [
   { value: 'all', label: '全部状态' },
@@ -134,6 +130,7 @@ const statusOptions = [
 const records = ref<VideoRecord[]>([])
 const loading = ref(false)
 const error = ref('')
+const openingTask = ref('')
 const filters = reactive({ status: 'all', model: '' })
 const pagination = reactive({ page: 1, page_size: 20, total: 0 })
 
@@ -164,6 +161,46 @@ function formatTime(value: string) {
 function money(value?: number | null) {
   const n = Number(value || 0)
   return n.toFixed(4)
+}
+
+function formatElapsed(item: VideoRecord) {
+  let seconds = Number(item.elapsed_seconds || 0)
+  if (!seconds && item.created_at && item.updated_at) {
+    const diff = Math.floor((new Date(item.updated_at).getTime() - new Date(item.created_at).getTime()) / 1000)
+    if (Number.isFinite(diff) && diff > 0) seconds = diff
+  }
+  if (!seconds) return '-'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  if (h > 0) return `${h}小时${m}分${s}秒`
+  if (m > 0) return `${m}分${s}秒`
+  return `${s}秒`
+}
+
+async function openContent(item: VideoRecord, download: boolean) {
+  if (!item.task_id) return
+  openingTask.value = item.task_id
+  try {
+    const blob = await fetchVideoRecordContent(item.task_id, download)
+    const url = URL.createObjectURL(blob)
+    if (download) {
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${item.task_id}.mp4`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    } else {
+      window.open(url, '_blank', 'noopener')
+      window.setTimeout(() => URL.revokeObjectURL(url), 10 * 60_000)
+    }
+  } catch (err: any) {
+    error.value = err?.response?.data?.error || err?.message || '打开视频失败'
+  } finally {
+    openingTask.value = ''
+  }
 }
 
 async function loadRecords(page = pagination.page) {
@@ -228,5 +265,15 @@ onMounted(() => loadRecords(1))
   padding: 0.375rem 0.625rem;
   font-size: 0.75rem;
   color: rgb(29 78 216);
+  transition: background 0.2s;
+}
+
+.link-btn:not(:disabled):hover {
+  background: rgb(219 234 254);
+}
+
+.link-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 </style>
