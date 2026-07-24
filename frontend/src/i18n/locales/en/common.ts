@@ -154,6 +154,8 @@ export default {
     announcements: 'Announcements',
     apiKeys: 'API Keys',
     batchImage: 'Batch Images',
+    imageWorkbench: 'Image Workbench',
+    imageLogs: 'Image Logs',
     usage: 'Usage',
     redeem: 'Redeem',
     affiliate: 'Affiliate Rebates',

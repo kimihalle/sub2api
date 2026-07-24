@@ -219,6 +219,28 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/image-workbench',
+    name: 'ImageWorkbench',
+    component: () => import('@/views/user/ImageWorkbenchView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Image Workbench',
+      titleKey: 'nav.imageWorkbench'
+    }
+  },
+  {
+    path: '/image-logs',
+    name: 'ImageLogs',
+    component: () => import('@/views/user/ImageLogsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Image Logs',
+      titleKey: 'nav.imageLogs'
+    }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: () => import('@/views/user/UsageView.vue'),

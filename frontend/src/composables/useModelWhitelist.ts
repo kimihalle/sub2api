@@ -3,6 +3,20 @@
 // =====================
 
 // OpenAI
+export const openaiImageModels = [
+  'nano-banana-pro-1k',
+  'nano-banana-pro-2k',
+  'nano-banana-pro-4k',
+  'gemini-banana-pro-4k',
+  'gemini-banana-pro',
+  'gpt-image-2',
+  'gpt-image-2-1k',
+  'gpt-image-2-2k',
+  'gpt-image-2-4k',
+  'gpt-image-1',
+  'gpt-image-1.5'
+]
+
 const openaiModels = [
   // GPT-5.2 系列
   'gpt-5.2', 'gpt-5.2-2025-12-11', 'gpt-5.2-chat-latest',
@@ -16,8 +30,8 @@ const openaiModels = [
   // GPT-5.3 / Codex 系列
   'gpt-5.3-codex-spark', 'codex-auto-review',
   'gpt-4o-audio-preview', 'gpt-4o-realtime-preview',
-  // GPT Image 系列
-  'gpt-image-1', 'gpt-image-1.5', 'gpt-image-2'
+  // GPT Image / compatible image generation models
+  ...openaiImageModels
 ]
 
 // Anthropic Claude

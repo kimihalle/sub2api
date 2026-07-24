@@ -95,6 +95,14 @@
         {{ isSyncingUpstream ? t('admin.accounts.syncUpstreamModelsLoading') : t('admin.accounts.syncUpstreamModels') }}
       </button>
       <button
+        v-if="canFillImageModels"
+        type="button"
+        @click="fillImageModels"
+        class="rounded-lg border border-purple-200 px-3 py-1.5 text-sm text-purple-600 hover:bg-purple-50 dark:border-purple-800 dark:text-purple-400 dark:hover:bg-purple-900/30"
+      >
+        填充生图模型
+      </button>
+      <button
         type="button"
         @click="clearAll"
         class="rounded-lg border border-red-200 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/30"
@@ -102,6 +110,9 @@
         {{ t('admin.accounts.clearAllModels') }}
       </button>
     </div>
+    <p v-if="canFillImageModels" class="-mt-2 mb-4 text-xs text-gray-500 dark:text-gray-400">
+      提示：上游同步只读取 /v1/models；部分生图平台不会在这里返回生图模型，同步不到时点“填充生图模型”即可。
+    </p>
 
     <!-- Custom Model Input -->
     <div class="mb-3">
@@ -136,7 +147,7 @@ import { accountsAPI } from '@/api/admin/accounts'
 import type { SyncUpstreamPreviewParams } from '@/api/admin/accounts'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
+import { allModels, getModelsByPlatform, openaiImageModels } from '@/composables/useModelWhitelist'
 
 const { t } = useI18n()
 
@@ -191,6 +202,10 @@ const canSyncUpstream = computed(() => {
     return upstreamSyncPlatforms.has(props.syncCredentials.platform.toLowerCase())
   }
   return false
+})
+const canFillImageModels = computed(() => {
+  if (normalizedPlatforms.value.length === 0) return true
+  return normalizedPlatforms.value.some(platform => platform.toLowerCase() === 'openai')
 })
 
 const availableOptions = computed(() => {
@@ -255,6 +270,16 @@ const fillRelated = () => {
       if (!newModels.includes(model)) {
         newModels.push(model)
       }
+    }
+  }
+  emit('update:modelValue', newModels)
+}
+
+const fillImageModels = () => {
+  const newModels = [...props.modelValue]
+  for (const model of openaiImageModels) {
+    if (!newModels.includes(model)) {
+      newModels.push(model)
     }
   }
   emit('update:modelValue', newModels)
