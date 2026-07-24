@@ -156,6 +156,7 @@ export default {
     batchImage: 'Batch Images',
     imageWorkbench: 'Image Workbench',
     imageLogs: 'Image Logs',
+    videoRecords: 'Video Records',
     usage: 'Usage',
     redeem: 'Redeem',
     affiliate: 'Affiliate Rebates',

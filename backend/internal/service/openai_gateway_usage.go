@@ -448,7 +448,8 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 }
 
 func isGrokVideoBillingModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "grok-imagine-video")
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "grok-imagine-video") || IsSanbaoVideoModel(model)
 }
 
 func isGrokVideoUsageResult(result *OpenAIForwardResult, billingModels []string) bool {
@@ -562,6 +563,27 @@ func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
 	}
 	resolution := NormalizeVideoBillingResolutionOrDefault(result.VideoResolution)
 	durationSeconds := NormalizeVideoBillingDurationSecondsOrDefault(result.VideoDurationSeconds)
+	if IsSanbaoVideoModel(billingModel) {
+		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved != nil &&
+			(resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage) {
+			gid := apiKey.Group.ID
+			cost, err := s.billingService.CalculateCostUnified(CostInput{
+				Ctx:            ctx,
+				Model:          billingModel,
+				GroupID:        &gid,
+				RequestCount:   videoCount,
+				SizeTier:       resolution,
+				RateMultiplier: multiplier,
+				Resolver:       s.resolver,
+				Resolved:       resolved,
+			})
+			if err == nil {
+				cost.BillingMode = string(BillingModeVideo)
+				return cost
+			}
+			logger.LegacyPrintf("service.openai_gateway", "Calculate Sanbao video channel cost failed: %v", err)
+		}
+	}
 	groupConfig := videoPriceConfigFromAPIKey(apiKey)
 	if apiKeyHasConfiguredVideoPrice(apiKey, resolution) {
 		return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
@@ -592,6 +614,11 @@ func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
 			return cost
 		}
 		logger.LegacyPrintf("service.openai_gateway", "Calculate video channel cost failed: %v", err)
+	}
+	if IsSanbaoVideoModel(billingModel) {
+		if cost, ok := DefaultSanbaoVideoCost(billingModel, resolution, durationSeconds, videoCount, multiplier); ok {
+			return cost
+		}
 	}
 
 	return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
