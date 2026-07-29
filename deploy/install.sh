@@ -32,6 +32,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 GITHUB_REPO="${GITHUB_REPO:-Wei-Shaw/sub2api}"
+GITHUB_FALLBACK_BRANCH="${GITHUB_FALLBACK_BRANCH:-custom/image-workbench}"
 INSTALL_DIR="/opt/sub2api"
 SERVICE_NAME="sub2api"
 SERVICE_USER="sub2api"
@@ -593,10 +594,17 @@ validate_version() {
     fi
 
     if [ "$http_code" != "200" ]; then
-        print_error "$(msg 'version_not_found'): $version" >&2
-        echo "" >&2
-        list_versions >&2
-        exit 1
+        local version_num=${version#v}
+        local archive_name="sub2api_${version_num}_${OS}_${ARCH}.tar.gz"
+        local fallback_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_FALLBACK_BRANCH}/release-assets/${version}/${archive_name}"
+        local fallback_code
+        fallback_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "$fallback_url" 2>/dev/null)
+        if [ "$fallback_code" != "200" ]; then
+            print_error "$(msg 'version_not_found'): $version" >&2
+            echo "" >&2
+            list_versions >&2
+            exit 1
+        fi
     fi
 
     # Return the normalized version (to stdout)
@@ -619,6 +627,8 @@ download_and_extract() {
     local archive_name="sub2api_${version_num}_${OS}_${ARCH}.tar.gz"
     local download_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/${archive_name}"
     local checksum_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/checksums.txt"
+    local fallback_download_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_FALLBACK_BRANCH}/release-assets/${LATEST_VERSION}/${archive_name}"
+    local fallback_checksum_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_FALLBACK_BRANCH}/release-assets/${LATEST_VERSION}/checksums.txt"
 
     print_info "$(msg 'downloading') ${archive_name}..."
 
@@ -627,9 +637,13 @@ download_and_extract() {
     trap "rm -rf $TEMP_DIR" EXIT
 
     # Download archive
-    if ! curl -sL "$download_url" -o "$TEMP_DIR/$archive_name"; then
-        print_error "$(msg 'download_failed')"
-        exit 1
+    if ! curl -sfL "$download_url" -o "$TEMP_DIR/$archive_name"; then
+        print_warning "GitHub Release 下载失败，尝试备用安装包..."
+        if ! curl -sfL "$fallback_download_url" -o "$TEMP_DIR/$archive_name"; then
+            print_error "$(msg 'download_failed')"
+            exit 1
+        fi
+        checksum_url="$fallback_checksum_url"
     fi
 
     # Download and verify checksum
